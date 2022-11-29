@@ -37,6 +37,7 @@ from .factory.factory_task_insertion import FactoryTaskInsertion
 from .factory.factory_task_nut_bolt_pick import FactoryTaskNutBoltPick
 from .factory.factory_task_nut_bolt_place import FactoryTaskNutBoltPlace
 from .factory.factory_task_nut_bolt_screw import FactoryTaskNutBoltScrew
+from .factory.factory_task_pcb_part_pick import FactoryTaskPcbPartPick
 from .franka_cabinet import FrankaCabinet
 from .franka_cube_stack import FrankaCubeStack
 from .humanoid import Humanoid
@@ -60,6 +61,7 @@ isaacgym_task_map = {
     "FactoryTaskNutBoltPick": FactoryTaskNutBoltPick,
     "FactoryTaskNutBoltPlace": FactoryTaskNutBoltPlace,
     "FactoryTaskNutBoltScrew": FactoryTaskNutBoltScrew,
+    "FactoryTaskPcbPartPick": FactoryTaskPcbPartPick,
     "FrankaCabinet": FrankaCabinet,
     "FrankaCubeStack": FrankaCubeStack,
     "Humanoid": Humanoid,

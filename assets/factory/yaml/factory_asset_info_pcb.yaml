@@ -1,0 +1,5 @@
+part_board_simple:
+    part:
+        urdf_path: 'part'
+    board:
+        urdf_path: 'board'

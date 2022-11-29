@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<robot name="factory_pcb_part">
+    <link name="factory_pcb_part">
+        <visual>
+            <geometry>
+                <mesh filename="../mesh/factory_pcb/part.obj"/>
+            </geometry>
+        </visual>
+        <collision>
+            <geometry>
+                <mesh filename="../mesh/factory_pcb/part.obj"/>
+            </geometry>
+            <sdf resolution="256"/>
+        </collision>
+    </link>
+</robot>
