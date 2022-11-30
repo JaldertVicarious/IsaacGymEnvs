@@ -1,5 +1,5 @@
 part_board_simple:
     part:
-        urdf_path: 'part'
+        urdf_path: 'factory_pcb_part'
     board:
-        urdf_path: 'board'
+        urdf_path: 'factory_pcb_board'

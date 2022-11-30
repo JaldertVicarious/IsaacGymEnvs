@@ -166,12 +166,12 @@ class FactoryEnvPcb(FactoryBase, FactoryABCEnv):
         self.table_actor_ids_sim = []  # within-sim indices
         actor_count = 0
 
-        self.part_heights = []
-        self.part_widths_max = []
-        self.board_widths = []
-        self.board_head_heights = []
-        self.board_shank_lengths = []
-        self.thread_pitches = []
+        # self.part_heights = []
+        # self.part_widths_max = []
+        # self.board_widths = []
+        # self.board_head_heights = []
+        # self.board_shank_lengths = []
+        # self.thread_pitches = []
 
         for i in range(self.num_envs):
 
@@ -198,10 +198,10 @@ class FactoryEnvPcb(FactoryBase, FactoryABCEnv):
             self.part_actor_ids_sim.append(actor_count)
             actor_count += 1
 
-            part_height = self.asset_info_pcb[subassembly][components[0]]['height']
-            part_width_max = self.asset_info_pcb[subassembly][components[0]]['width_max']
-            self.part_heights.append(part_height)
-            self.part_widths_max.append(part_width_max)
+            # part_height = self.asset_info_pcb[subassembly][components[0]]['height']
+            # part_width_max = self.asset_info_pcb[subassembly][components[0]]['width_max']
+            # self.part_heights.append(part_height)
+            # self.part_widths_max.append(part_width_max)
 
             board_pose = gymapi.Transform()
             board_pose.p.x = 0.0
@@ -212,12 +212,12 @@ class FactoryEnvPcb(FactoryBase, FactoryABCEnv):
             self.board_actor_ids_sim.append(actor_count)
             actor_count += 1
 
-            board_width = self.asset_info_pcb[subassembly][components[1]]['width']
-            board_head_height = self.asset_info_pcb[subassembly][components[1]]['head_height']
-            board_shank_length = self.asset_info_pcb[subassembly][components[1]]['shank_length']
-            self.board_widths.append(board_width)
-            self.board_head_heights.append(board_head_height)
-            self.board_shank_lengths.append(board_shank_length)
+            # board_width = self.asset_info_pcb[subassembly][components[1]]['width']
+            # board_head_height = self.asset_info_pcb[subassembly][components[1]]['head_height']
+            # board_shank_length = self.asset_info_pcb[subassembly][components[1]]['shank_length']
+            # self.board_widths.append(board_width)
+            # self.board_head_heights.append(board_head_height)
+            # self.board_shank_lengths.append(board_shank_length)
 
             table_handle = self.gym.create_actor(env_ptr, table_asset, table_pose, 'table', i, 0, 0)
             self.table_actor_ids_sim.append(actor_count)

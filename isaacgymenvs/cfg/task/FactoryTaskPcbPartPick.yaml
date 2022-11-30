@@ -4,7 +4,7 @@ defaults:
     - _self_
     # - /factory_schema_config_task
 
-name: FactoryTaskNutBoltPick
+name: FactoryTaskPcbPartPick
 physics_engine: ${..physics_engine}
 
 sim:

@@ -1,0 +1,16 @@
+# See schema in factory_schema_config_env.py for descriptions of common parameters.
+
+defaults:
+    - _self_
+    - /factory_schema_config_env
+
+sim:
+    disable_franka_collisions: False
+
+env:
+    env_name: 'FactoryEnvPcb'
+
+    desired_subassemblies: ['part_board_simple']
+    part_board_density: 10000
+    part_lateral_offset: 0.1
+    part_board_friction: 0.9

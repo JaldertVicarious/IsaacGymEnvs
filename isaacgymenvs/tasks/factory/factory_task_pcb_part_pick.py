@@ -84,19 +84,28 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         """Acquire tensors."""
 
         # Grasp pose tensors
-        nut_grasp_heights = self.bolt_head_heights + self.nut_heights * 0.5  # nut COM
-        self.nut_grasp_pos_local = nut_grasp_heights * torch.tensor([0.0, 0.0, 1.0], device=self.device).repeat(
+        # NOTE: these are in model frame
+        # X_MG (Grasp in Model Frame)
+        # TODO: We want to compute a "grasp" (e.g. along long edge of part)
+        # 
+
+        # NOTE: We don't need this as model pose translation is already correct
+        self.part_grasp_pos_local = torch.tensor([0.0, 0.0, 0.0], device=self.device).repeat(
             (self.num_envs, 1))
-        self.nut_grasp_quat_local = torch.tensor([0.0, 1.0, 0.0, 0.0], device=self.device).unsqueeze(0).repeat(
+        # TODO: Unclear if we need this
+        self.part_grasp_quat_local = torch.tensor([0.0, 1.0, 0.0, 0.0], device=self.device).unsqueeze(0).repeat(
             self.num_envs, 1)
 
+        # ------------------ Continue here ----- !
         # Keypoint tensors
+        # NOTE: This creates N (4) key points on line of unit length centered at 0 (linspace)
+        # and then scales (0.5) []
         self.keypoint_offsets = self._get_keypoint_offsets(
             self.cfg_task.rl.num_keypoints) * self.cfg_task.rl.keypoint_scale
         self.keypoints_gripper = torch.zeros((self.num_envs, self.cfg_task.rl.num_keypoints, 3),
                                              dtype=torch.float32,
                                              device=self.device)
-        self.keypoints_nut = torch.zeros_like(self.keypoints_gripper, device=self.device)
+        self.keypoints_part = torch.zeros_like(self.keypoints_gripper, device=self.device)
 
         self.identity_quat = torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device).unsqueeze(0).repeat(self.num_envs,
                                                                                                         1)
@@ -105,19 +114,22 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         """Refresh tensors."""
 
         # Compute pose of nut grasping frame
-        self.nut_grasp_quat, self.nut_grasp_pos = torch_jit_utils.tf_combine(self.nut_quat,
-                                                                             self.nut_pos,
-                                                                             self.nut_grasp_quat_local,
-                                                                             self.nut_grasp_pos_local)
 
-        # Compute pos of keypoints on gripper and nut in world frame
+        # NOTE: (q1* q2, (q1 * t2) + t1)
+        # X_WM * X_MG = X_WG
+        self.part_grasp_quat, self.part_grasp_pos = torch_jit_utils.tf_combine(self.part_quat,
+                                                                             self.part_pos,
+                                                                             self.part_grasp_quat_local,
+                                                                             self.part_grasp_pos_local)
+
+        # Compute pos of keypoints on gripper and part in world frame
         for idx, keypoint_offset in enumerate(self.keypoint_offsets):
             self.keypoints_gripper[:, idx] = torch_jit_utils.tf_combine(self.fingertip_midpoint_quat,
                                                                         self.fingertip_midpoint_pos,
                                                                         self.identity_quat,
                                                                         keypoint_offset.repeat(self.num_envs, 1))[1]
-            self.keypoints_nut[:, idx] = torch_jit_utils.tf_combine(self.nut_grasp_quat,
-                                                                    self.nut_grasp_pos,
+            self.keypoints_part[:, idx] = torch_jit_utils.tf_combine(self.part_grasp_quat,
+                                                                    self.part_grasp_pos,
                                                                     self.identity_quat,
                                                                     keypoint_offset.repeat(self.num_envs, 1))[1]
 
@@ -162,8 +174,8 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
                        self.fingertip_midpoint_quat,
                        self.fingertip_midpoint_linvel,
                        self.fingertip_midpoint_angvel,
-                       self.nut_grasp_pos,
-                       self.nut_grasp_quat]
+                       self.part_grasp_pos,
+                       self.part_grasp_quat]
 
         self.obs_buf = torch.cat(obs_tensors, dim=-1)  # shape = (num_envs, num_observations)
 
@@ -236,44 +248,44 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         # shape of root_linvel = (num_envs, num_actors, 3)
         # shape of root_angvel = (num_envs, num_actors, 3)
 
-        # Randomize root state of nut
-        nut_noise_xy = 2 * (torch.rand((self.num_envs, 2), dtype=torch.float32, device=self.device) - 0.5)  # [-1, 1]
-        nut_noise_xy = nut_noise_xy @ torch.diag(
-            torch.tensor(self.cfg_task.randomize.nut_pos_xy_initial_noise, device=self.device))
-        self.root_pos[env_ids, self.nut_actor_id_env, 0] = self.cfg_task.randomize.nut_pos_xy_initial[0] + nut_noise_xy[
+        # Randomize root state of part
+        part_noise_xy = 2 * (torch.rand((self.num_envs, 2), dtype=torch.float32, device=self.device) - 0.5)  # [-1, 1]
+        part_noise_xy = part_noise_xy @ torch.diag(
+            torch.tensor(self.cfg_task.randomize.part_pos_xy_initial_noise, device=self.device))
+        self.root_pos[env_ids, self.part_actor_id_env, 0] = self.cfg_task.randomize.part_pos_xy_initial[0] + part_noise_xy[
             env_ids, 0]
-        self.root_pos[env_ids, self.nut_actor_id_env, 1] = self.cfg_task.randomize.nut_pos_xy_initial[1] + nut_noise_xy[
+        self.root_pos[env_ids, self.part_actor_id_env, 1] = self.cfg_task.randomize.part_pos_xy_initial[1] + part_noise_xy[
             env_ids, 1]
         self.root_pos[
-            env_ids, self.nut_actor_id_env, 2] = self.cfg_base.env.table_height - self.bolt_head_heights.squeeze(-1)
-        self.root_quat[env_ids, self.nut_actor_id_env] = torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=torch.float32,
+            env_ids, self.part_actor_id_env, 2] = self.cfg_base.env.table_height 
+        self.root_quat[env_ids, self.part_actor_id_env] = torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=torch.float32,
                                                                       device=self.device).repeat(len(env_ids), 1)
 
-        self.root_linvel[env_ids, self.nut_actor_id_env] = 0.0
-        self.root_angvel[env_ids, self.nut_actor_id_env] = 0.0
+        self.root_linvel[env_ids, self.part_actor_id_env] = 0.0
+        self.root_angvel[env_ids, self.part_actor_id_env] = 0.0
 
         # Randomize root state of bolt
-        bolt_noise_xy = 2 * (torch.rand((self.num_envs, 2), dtype=torch.float32, device=self.device) - 0.5)  # [-1, 1]
-        bolt_noise_xy = bolt_noise_xy @ torch.diag(
-            torch.tensor(self.cfg_task.randomize.bolt_pos_xy_noise, device=self.device))
-        self.root_pos[env_ids, self.bolt_actor_id_env, 0] = self.cfg_task.randomize.bolt_pos_xy_initial[0] + \
-                                                            bolt_noise_xy[env_ids, 0]
-        self.root_pos[env_ids, self.bolt_actor_id_env, 1] = self.cfg_task.randomize.bolt_pos_xy_initial[1] + \
-                                                            bolt_noise_xy[env_ids, 1]
-        self.root_pos[env_ids, self.bolt_actor_id_env, 2] = self.cfg_base.env.table_height
-        self.root_quat[env_ids, self.bolt_actor_id_env] = torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=torch.float32,
+        board_noise_xy = 2 * (torch.rand((self.num_envs, 2), dtype=torch.float32, device=self.device) - 0.5)  # [-1, 1]
+        board_noise_xy = board_noise_xy @ torch.diag(
+            torch.tensor(self.cfg_task.randomize.board_pos_xy_noise, device=self.device))
+        self.root_pos[env_ids, self.board_actor_id_env, 0] = self.cfg_task.randomize.board_pos_xy_initial[0] + \
+                                                            board_noise_xy[env_ids, 0]
+        self.root_pos[env_ids, self.board_actor_id_env, 1] = self.cfg_task.randomize.board_pos_xy_initial[1] + \
+                                                            board_noise_xy[env_ids, 1]
+        self.root_pos[env_ids, self.board_actor_id_env, 2] = self.cfg_base.env.table_height
+        self.root_quat[env_ids, self.board_actor_id_env] = torch.tensor([0.0, 0.0, 0.0, 1.0], dtype=torch.float32,
                                                                        device=self.device).repeat(len(env_ids), 1)
 
-        self.root_linvel[env_ids, self.bolt_actor_id_env] = 0.0
-        self.root_angvel[env_ids, self.bolt_actor_id_env] = 0.0
+        self.root_linvel[env_ids, self.board_actor_id_env] = 0.0
+        self.root_angvel[env_ids, self.board_actor_id_env] = 0.0
 
-        nut_bolt_actor_ids_sim = torch.cat((self.nut_actor_ids_sim[env_ids],
-                                            self.bolt_actor_ids_sim[env_ids]),
+        part_board_actor_ids_sim = torch.cat((self.part_actor_ids_sim[env_ids],
+                                            self.board_actor_ids_sim[env_ids]),
                                            dim=0)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(self.root_state),
-                                                     gymtorch.unwrap_tensor(nut_bolt_actor_ids_sim),
-                                                     len(nut_bolt_actor_ids_sim))
+                                                     gymtorch.unwrap_tensor(part_board_actor_ids_sim),
+                                                     len(part_board_actor_ids_sim))
 
     def _reset_buffers(self, env_ids):
         """Reset buffers."""
@@ -342,7 +354,7 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
     def _get_keypoint_dist(self):
         """Get keypoint distance."""
 
-        keypoint_dist = torch.sum(torch.norm(self.keypoints_nut - self.keypoints_gripper, p=2, dim=-1), dim=-1)
+        keypoint_dist = torch.sum(torch.norm(self.keypoints_part - self.keypoints_gripper, p=2, dim=-1), dim=-1)
 
         return keypoint_dist
 
@@ -379,7 +391,7 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         """Check if nut is above table by more than specified multiple times height of nut."""
 
         lift_success = torch.where(
-            self.nut_pos[:, 2] > self.cfg_base.env.table_height + self.nut_heights.squeeze(-1) * height_multiple,
+            self.part_pos[:, 2] > self.cfg_base.env.table_height + 0.1,
             torch.ones((self.num_envs,), device=self.device),
             torch.zeros((self.num_envs,), device=self.device))
 
