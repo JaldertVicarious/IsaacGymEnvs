@@ -38,6 +38,7 @@ import os
 import torch
 
 import numpy as np
+import roma
 
 import gym
 from isaacgym import gymapi, gymtorch, torch_utils
@@ -122,7 +123,9 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         ).repeat((self.num_envs, 1))
         # This is needed to compute a grasp orientation
         self.part_grasp_quat_local = (
-            torch.tensor([0.0, 1.0, 0.0, 0.0], device=self.device)
+            torch.tensor(
+                [0.707106781186547, 0.7071067811865475, 0.0, 0.0], device=self.device
+            )
             .unsqueeze(0)
             .repeat(self.num_envs, 1)
         )
@@ -223,18 +226,18 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         self.compute_observations()
         self.compute_reward()
 
-
-
     def compute_observations(self):
         """Compute observations."""
 
         # This is a (very ugly) way to render debug axes (in this case for the grasp pose)
         self.gym.clear_lines(self.viewer)
 
-
         # X_WG
         x, y, z = self.part_grasp_pos[0, :].cpu()
-        tx = gymapi.Transform(gymapi.Vec3(*self.part_grasp_pos[0, :].cpu()), gymapi.Quat(*self.part_grasp_quat[0, :].cpu()))
+        tx = gymapi.Transform(
+            gymapi.Vec3(*self.part_grasp_pos[0, :].cpu()),
+            gymapi.Quat(*self.part_grasp_quat[0, :].cpu()),
+        )
         xs = tx.transform_point(gymapi.Vec3(x=0.25))
         ys = tx.transform_point(gymapi.Vec3(y=0.25))
         zs = tx.transform_point(gymapi.Vec3(z=0.25))
@@ -243,12 +246,20 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
             self.viewer,
             self.gym.get_env(self.sim, 0),
             3,
-            np.array([[x, y, z], [xs.x, xs.y, xs.z],
-                      [x, y, z], [ys.x, ys.y, ys.z],
-                      [x, y, z], [zs.x, zs.y, zs.z]], dtype=np.float32),
-            np.array([[255.0, 0.0, 0],
-                      [0., 255., 0],
-                      [0., 0., 255.]], dtype=np.float32),
+            np.array(
+                [
+                    [x, y, z],
+                    [xs.x, xs.y, xs.z],
+                    [x, y, z],
+                    [ys.x, ys.y, ys.z],
+                    [x, y, z],
+                    [zs.x, zs.y, zs.z],
+                ],
+                dtype=np.float32,
+            ),
+            np.array(
+                [[255.0, 0.0, 0], [0.0, 255.0, 0], [0.0, 0.0, 255.0]], dtype=np.float32
+            ),
         )
         # Shallow copies of tensors
         obs_tensors = [
@@ -360,33 +371,33 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         # shape of root_linvel = (num_envs, num_actors, 3)
         # shape of root_angvel = (num_envs, num_actors, 3)
 
-        # Randomize root state of part
-        part_noise_xy = 2 * (
-            torch.rand((self.num_envs, 2), dtype=torch.float32, device=self.device)
-            - 0.5
-        )  # [-1, 1]
-        part_noise_xy = part_noise_xy @ torch.diag(
-            torch.tensor(
-                self.cfg_task.randomize.part_pos_xy_initial_noise, device=self.device
-            )
-        )
-        self.root_pos[env_ids, self.part_actor_id_env, 0] = (
-            self.cfg_task.randomize.part_pos_xy_initial[0] + part_noise_xy[env_ids, 0]
-        )
-        self.root_pos[env_ids, self.part_actor_id_env, 1] = (
-            self.cfg_task.randomize.part_pos_xy_initial[1] + part_noise_xy[env_ids, 1]
-        )
-        self.root_pos[
-            env_ids, self.part_actor_id_env, 2
-        ] = self.cfg_base.env.table_height
-        self.root_quat[env_ids, self.part_actor_id_env] = torch.tensor(
-            [0.0, 0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
-        ).repeat(len(env_ids), 1)
+        # # Randomize root state of part
+        # part_noise_xy = 2 * (
+        #     torch.rand((self.num_envs, 2), dtype=torch.float32, device=self.device)
+        #     - 0.5
+        # )  # [-1, 1]
+        # part_noise_xy = part_noise_xy @ torch.diag(
+        #     torch.tensor(
+        #         self.cfg_task.randomize.part_pos_xy_initial_noise, device=self.device
+        #     )
+        # )
+        # self.root_pos[env_ids, self.part_actor_id_env, 0] = (
+        #     self.cfg_task.randomize.part_pos_xy_initial[0] + part_noise_xy[env_ids, 0]
+        # )
+        # self.root_pos[env_ids, self.part_actor_id_env, 1] = (
+        #     self.cfg_task.randomize.part_pos_xy_initial[1] + part_noise_xy[env_ids, 1]
+        # )
+        # self.root_pos[
+        #     env_ids, self.part_actor_id_env, 2
+        # ] = self.cfg_base.env.table_height
+        # self.root_quat[env_ids, self.part_actor_id_env] = torch.tensor(
+        #     [0.0, 0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
+        # ).repeat(len(env_ids), 1)
 
-        self.root_linvel[env_ids, self.part_actor_id_env] = 0.0
-        self.root_angvel[env_ids, self.part_actor_id_env] = 0.0
+        # self.root_linvel[env_ids, self.part_actor_id_env] = 0.0
+        # self.root_angvel[env_ids, self.part_actor_id_env] = 0.0
 
-        # Randomize root state of bolt
+        # Randomize root state of board
         board_noise_xy = 2 * (
             torch.rand((self.num_envs, 2), dtype=torch.float32, device=self.device)
             - 0.5
@@ -400,15 +411,50 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         self.root_pos[env_ids, self.board_actor_id_env, 1] = (
             self.cfg_task.randomize.board_pos_xy_initial[1] + board_noise_xy[env_ids, 1]
         )
-        self.root_pos[
-            env_ids, self.board_actor_id_env, 2
-        ] = self.cfg_base.env.table_height
-        self.root_quat[env_ids, self.board_actor_id_env] = torch.tensor(
-            [0.0, 0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
-        ).repeat(len(env_ids), 1)
+        self.root_pos[env_ids, self.board_actor_id_env, 2] = (
+            self.cfg_base.env.table_height + 0.02
+        )
+
+        # TODO: Add random orientations for board.
+        # [0, 2 PI]
+        yaws = torch.rand(
+            (self.num_envs, 1), dtype=torch.float32, device=self.device
+        ) * (np.pi * 2)
+
+        rotvecs = (
+            torch.tensor(
+                [0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
+            ).repeat(len(env_ids), 1)
+            * yaws
+        )
+
+        qyaws = roma.rotvec_to_unitquat(rotvecs)
+
+        self.root_quat[env_ids, self.board_actor_id_env] = qyaws
 
         self.root_linvel[env_ids, self.board_actor_id_env] = 0.0
         self.root_angvel[env_ids, self.board_actor_id_env] = 0.0
+
+        # Set the transform of the chip to be seated in the board
+
+        self.root_pos[env_ids, self.part_actor_id_env, 0] = self.root_pos[
+            env_ids, self.board_actor_id_env, 0
+        ]
+        self.root_pos[env_ids, self.part_actor_id_env, 1] = self.root_pos[
+            env_ids, self.board_actor_id_env, 1
+        ]
+
+        self.root_pos[env_ids, self.part_actor_id_env, 2] = (
+            self.cfg_base.env.table_height + 0.02 + 0.005
+        )
+
+        self.root_quat[env_ids, self.part_actor_id_env] = qyaws
+        # self.root_quat[env_ids, self.part_actor_id_env] = torch.tensor(
+        # [0.0, 0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
+        # ).repeat(len(env_ids), 1)
+
+        self.root_linvel[env_ids, self.part_actor_id_env] = 0.0
+        self.root_angvel[env_ids, self.part_actor_id_env] = 0.0
 
         part_board_actor_ids_sim = torch.cat(
             (self.part_actor_ids_sim[env_ids], self.board_actor_ids_sim[env_ids]), dim=0
@@ -459,6 +505,11 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         angle = torch.norm(rot_actions, p=2, dim=-1)
         axis = rot_actions / angle.unsqueeze(-1)
         rot_actions_quat = torch_utils.quat_from_angle_axis(angle, axis)
+        # TODO: This logic is slightly weird
+        # We first copy the angle a : [a, a, a, a]
+        # If a > clamp_rot_thresh
+        # we use a
+        # otherwise we use default no-rotation orientation.
         if self.cfg_task.rl.clamp_rot:
             rot_actions_quat = torch.where(
                 angle.unsqueeze(-1).repeat(1, 4) > self.cfg_task.rl.clamp_rot_thresh,

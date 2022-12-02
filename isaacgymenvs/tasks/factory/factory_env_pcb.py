@@ -121,6 +121,7 @@ class FactoryEnvPcb(FactoryBase, FactoryABCEnv):
         board_options.enable_gyroscopic_forces = True
         board_options.default_dof_drive_mode = gymapi.DOF_MODE_NONE
         board_options.use_mesh_materials = False
+        board_options.fix_base_link = True
         if self.cfg_base.mode.export_scene:
             board_options.mesh_normal_mode = gymapi.COMPUTE_PER_FACE
 
