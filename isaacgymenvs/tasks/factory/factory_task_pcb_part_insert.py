@@ -26,21 +26,20 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-"""Factory: Class for pcb-part pick task.
+"""Factory: Class for pcb part insertion.
 
 Inherits pcb environment class and abstract task class (not enforced). Can be executed with
-python train.py task=FactoryTaskPcbPartPick
+python train.py task=FactoryTaskPcbPartInsert
 """
 
 import hydra
+import math
 import omegaconf
 import os
 import torch
 
-import numpy as np
 import roma
-
-import gym
+import numpy as np
 from isaacgym import gymapi, gymtorch, torch_utils
 import isaacgymenvs.tasks.factory.factory_control as fc
 from isaacgymenvs.tasks.factory.factory_env_pcb import FactoryEnvPcb
@@ -51,7 +50,7 @@ from isaacgymenvs.tasks.factory.factory_schema_config_task import (
 from isaacgymenvs.utils import torch_jit_utils
 
 
-class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
+class FactoryTaskPcbPartInsert(FactoryEnvPcb, FactoryABCTask):
     def __init__(
         self,
         cfg,
@@ -104,47 +103,38 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
             "yaml"
         ]  # strip superfluous nesting
 
-        ppo_path = "train/FactoryTaskPcbPartPickPPO.yaml"  # relative to Gym's Hydra search path (cfg dir)
+        ppo_path = "train/FactoryTaskPcbPartInsertPPO.yaml"  # relative to Gym's Hydra search path (cfg dir)
         self.cfg_ppo = hydra.compose(config_name=ppo_path)
         self.cfg_ppo = self.cfg_ppo["train"]  # strip superfluous nesting
 
     def _acquire_task_tensors(self):
         """Acquire tensors."""
 
-        # Grasp pose tensors
-        # NOTE: these are in model frame
-        # X_MG (Grasp in Model Frame)
-        # TODO: We want to compute a "grasp" (e.g. along long edge of part)
-        #
-
-        # NOTE: We don't need this as model pose translation is already correct
-        self.part_grasp_pos_local = torch.tensor(
-            [0.0, 0.0, 0.0], device=self.device
-        ).repeat((self.num_envs, 1))
-        # This is needed to compute a grasp orientation
-        self.part_grasp_quat_local = (
-            torch.tensor(
-                [0.707106781186547, 0.7071067811865475, 0.0, 0.0], device=self.device
-            )
-            .unsqueeze(0)
-            .repeat(self.num_envs, 1)
+        # part/board tensors
+        self.part_pos_local = torch.tensor([0.0, 0.0, 0.0], device=self.device).repeat(
+            (self.num_envs, 1)
         )
 
+        self.board_pos_local = torch.tensor([0.0, 0.0, 0.0], device=self.device).repeat(
+            (self.num_envs, 1)
+        )
         # Keypoint tensors
-        # NOTE: This creates N (4) key points on line of unit length centered at 0 (linspace)
-        # and then scales (0.5) []
+        # TODO: Add keypoints on prongs and below board at the correct locations.
+        # The keypoints are then also not lines but an array of 2x4 pins.
+
+        # NOTE: Key points seem to be aligned along z-axis in part-board example.
+        # This would ensure an alignment of top-down grasp.
+
         self.keypoint_offsets = (
             self._get_keypoint_offsets(self.cfg_task.rl.num_keypoints)
             * self.cfg_task.rl.keypoint_scale
         )
-        self.keypoints_gripper = torch.zeros(
+        self.keypoints_part = torch.zeros(
             (self.num_envs, self.cfg_task.rl.num_keypoints, 3),
             dtype=torch.float32,
             device=self.device,
         )
-        self.keypoints_part = torch.zeros_like(
-            self.keypoints_gripper, device=self.device
-        )
+        self.keypoints_board = torch.zeros_like(self.keypoints_part, device=self.device)
 
         self.identity_quat = (
             torch.tensor([0.0, 0.0, 0.0, 1.0], device=self.device)
@@ -152,38 +142,27 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
             .repeat(self.num_envs, 1)
         )
 
+        self.actions = torch.zeros(
+            (self.num_envs, self.cfg_task.env.numActions), device=self.device
+        )
+
     def _refresh_task_tensors(self):
         """Refresh tensors."""
 
-        # Compute pose of nut grasping frame
-
-        # NOTE: (q1* q2, (q1 * t2) + t1)
-        # X_WM * X_MG = X_WG
-        self.part_grasp_quat, self.part_grasp_pos = torch_jit_utils.tf_combine(
-            self.part_quat,
-            self.part_pos,
-            self.part_grasp_quat_local,
-            self.part_grasp_pos_local,
-        )
-
-        # Compute pos of keypoints on gripper and part in world frame
+        # Compute pos of keypoints on gripper, part, and board in world frame
         for idx, keypoint_offset in enumerate(self.keypoint_offsets):
-            self.keypoints_gripper[:, idx] = torch_jit_utils.tf_combine(
-                self.fingertip_midpoint_quat,
-                self.fingertip_midpoint_pos,
-                self.identity_quat,
-                keypoint_offset.repeat(self.num_envs, 1),
-            )[1]
             self.keypoints_part[:, idx] = torch_jit_utils.tf_combine(
-                self.part_grasp_quat,
-                self.part_grasp_pos,
+                self.part_quat,
+                self.part_pos,
                 self.identity_quat,
-                keypoint_offset.repeat(self.num_envs, 1),
+                (keypoint_offset + self.part_pos_local),
             )[1]
-
-    def make_grasp_pose_lines():
-        """Compute grasp pose lines for debug drawing."""
-        ...
+            self.keypoints_board[:, idx] = torch_jit_utils.tf_combine(
+                self.board_quat,
+                self.board_pos,
+                self.identity_quat,
+                (keypoint_offset + self.board_pos_local),
+            )[1]
 
     def pre_physics_step(self, actions):
         """Reset environments. Apply actions from policy. Simulation step called after this method."""
@@ -197,9 +176,7 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         )  # shape = (num_envs, num_actions); values = [-1, 1]
 
         self._apply_actions_as_ctrl_targets(
-            actions=self.actions,
-            ctrl_target_gripper_dof_pos=self.asset_info_franka_table.franka_gripper_width_max,
-            do_scale=True,
+            actions=self.actions, ctrl_target_gripper_dof_pos=0.0, do_scale=True
         )
 
     def post_physics_step(self):
@@ -210,16 +187,10 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         # In this policy, episode length is constant
         is_last_step = self.progress_buf[0] == self.max_episode_length - 1
 
-        if self.cfg_task.env.close_and_lift:
-            # At this point, robot has executed RL policy. Now close gripper and lift (open-loop)
-            if is_last_step:
-                self._close_gripper(
-                    sim_steps=self.cfg_task.env.num_gripper_close_sim_steps
-                )
-                self._lift_gripper(
-                    sim_steps=self.cfg_task.env.num_gripper_lift_sim_steps
-                )
-
+        # At this point, robot has executed RL policy. Now close gripper and lift (open-loop)
+        if is_last_step:
+            self._open_gripper(sim_steps=self.cfg_task.env.num_gripper_close_sim_steps)
+            self._lift_gripper(sim_steps=self.cfg_task.env.num_gripper_lift_sim_steps)
         self.refresh_base_tensors()
         self.refresh_env_tensors()
         self._refresh_task_tensors()
@@ -229,46 +200,71 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
     def compute_observations(self):
         """Compute observations."""
 
-        # This is a (very ugly) way to render debug axes }in this case for the grasp pose)
+        # This is a (very ugly) way to render key points
         self.gym.clear_lines(self.viewer)
 
-        # X_WG
-        x, y, z = self.part_grasp_pos[0, :].cpu()
-        tx = gymapi.Transform(
-            gymapi.Vec3(*self.part_grasp_pos[0, :].cpu()),
-            gymapi.Quat(*self.part_grasp_quat[0, :].cpu()),
-        )
-        xs = tx.transform_point(gymapi.Vec3(x=0.25))
-        ys = tx.transform_point(gymapi.Vec3(y=0.25))
-        zs = tx.transform_point(gymapi.Vec3(z=0.25))
+        # Render key points
 
-        self.gym.add_lines(
-            self.viewer,
-            self.gym.get_env(self.sim, 0),
-            3,
-            np.array(
-                [
-                    [x, y, z],
-                    [xs.x, xs.y, xs.z],
-                    [x, y, z],
-                    [ys.x, ys.y, ys.z],
-                    [x, y, z],
-                    [zs.x, zs.y, zs.z],
-                ],
-                dtype=np.float32,
-            ),
-            np.array(
-                [[255.0, 0.0, 0], [0.0, 255.0, 0], [0.0, 0.0, 255.0]], dtype=np.float32
-            ),
-        )
+        eps = 0.01 / 2
+
+        for idx in range(self.cfg_task.rl.num_keypoints):
+            # P_W
+            x, y, z = self.keypoints_part[0, idx].cpu()
+
+            self.gym.add_lines(
+                self.viewer,
+                self.gym.get_env(self.sim, 0),
+                3,
+                np.array(
+                    [
+                        [x - eps, y, z],
+                        [x + eps, y, z],
+                        [x, y - eps, z],
+                        [x, y + eps, z],
+                        [x, y, z - eps],
+                        [x, y, z + eps],
+                    ],
+                    dtype=np.float32,
+                ),
+                np.array(
+                    [[255.0, 0.0, 0.0], [255.0, 0.0, 0.0], [255.0, 0.0, 0.0]],
+                    dtype=np.float32,
+                ),
+            )
+
+            x, y, z = self.keypoints_board[0, idx].cpu()
+
+            self.gym.add_lines(
+                self.viewer,
+                self.gym.get_env(self.sim, 0),
+                3,
+                np.array(
+                    [
+                        [x - eps, y, z],
+                        [x + eps, y, z],
+                        [x, y - eps, z],
+                        [x, y + eps, z],
+                        [x, y, z - eps],
+                        [x, y, z + eps],
+                    ],
+                    dtype=np.float32,
+                ),
+                np.array(
+                    [[0.0, 255.0, 0.0], [0.0, 255.0, 0.0], [0.0, 255.0, 0.0]],
+                    dtype=np.float32,
+                ),
+            )
+
         # Shallow copies of tensors
         obs_tensors = [
             self.fingertip_midpoint_pos,
             self.fingertip_midpoint_quat,
             self.fingertip_midpoint_linvel,
             self.fingertip_midpoint_angvel,
-            self.part_grasp_pos,
-            self.part_grasp_quat,
+            self.part_pos,
+            self.part_quat,
+            self.board_pos,
+            self.board_quat,
         ]
 
         self.obs_buf = torch.cat(
@@ -288,7 +284,7 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
 
         # If max episode length has been reached
         self.reset_buf[:] = torch.where(
-            self.progress_buf[:] >= self.max_episode_length - 1,
+            self.progress_buf[:] >= self.cfg_task.rl.max_episode_length - 1,
             torch.ones_like(self.reset_buf),
             self.reset_buf,
         )
@@ -311,16 +307,30 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         is_last_step = self.progress_buf[0] == self.max_episode_length - 1
 
         if is_last_step:
-            # Check if nut is picked up and above table
-            lift_success = self._check_lift_success(height_multiple=3.0)
-            self.rew_buf[:] += lift_success * self.cfg_task.rl.success_bonus
-            self.extras["successes"] = torch.mean(lift_success.float())
+            # Check if part is close enough to board
+            is_part_close_to_board = self._check_part_close_to_board()
+            self.rew_buf[:] += is_part_close_to_board * self.cfg_task.rl.success_bonus
+            self.extras["successes"] = torch.mean(is_part_close_to_board.float())
 
     def reset_idx(self, env_ids):
         """Reset specified environments."""
 
         self._reset_franka(env_ids)
         self._reset_object(env_ids)
+
+        # Close gripper onto part
+        self.disable_gravity()  # to prevent part from falling
+        for _ in range(self.cfg_task.env.num_gripper_close_sim_steps):
+            self.ctrl_target_dof_pos[env_ids, 7:9] = 0.0
+            delta_hand_pose = torch.zeros(
+                (self.num_envs, self.cfg_task.env.numActions), device=self.device
+            )  # no arm motion
+            self._apply_actions_as_ctrl_targets(
+                actions=delta_hand_pose, ctrl_target_gripper_dof_pos=0.0, do_scale=False
+            )
+            self.gym.simulate(self.sim)
+            self.render()
+        self.enable_gravity(gravity_mag=self.cfg_base.sim.gravity_mag)
 
         self._randomize_gripper_pose(
             env_ids, sim_steps=self.cfg_task.env.num_gripper_move_sim_steps
@@ -338,12 +348,13 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
                         self.cfg_task.randomize.franka_arm_initial_dof_pos,
                         device=self.device,
                     ),
+                    # NOTE: this depends on width of part to-be-grasped.
                     torch.tensor(
-                        [self.asset_info_franka_table.franka_gripper_width_max],
+                        [0.007 * 0.5 * 1.1],
                         device=self.device,
                     ),
                     torch.tensor(
-                        [self.asset_info_franka_table.franka_gripper_width_max],
+                        [0.007 * 0.5 * 1.1],
                         device=self.device,
                     ),
                 ),
@@ -352,6 +363,17 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
             .unsqueeze(0)
             .repeat((self.num_envs, 1))
         )  # shape = (num_envs, num_dofs)
+        # self.dof_pos[env_ids] = torch.cat(
+        #     (
+        #         torch.tensor(
+        #             self.cfg_task.randomize.franka_arm_initial_dof_pos,
+        #             device=self.device,
+        #         ).repeat((len(env_ids), 1)),
+        #         torch.tensor([[(0.01 * 0.5) * 1.1]], device=self.device),  # buffer on gripper DOF pos to prevent initial contact
+        #         torch.tensor([[(0.01 * 0.5) * 1.1]], device=self.device),
+        #     ),  # buffer on gripper DOF pos to prevent initial contact
+        #     dim=-1,
+        # )  # shape = (num_envs, num_dofs)
         self.dof_vel[env_ids] = 0.0  # shape = (num_envs, num_dofs)
         self.ctrl_target_dof_pos[env_ids] = self.dof_pos[env_ids]
 
@@ -364,38 +386,46 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         )
 
     def _reset_object(self, env_ids):
-        """Reset root states of nut and bolt."""
+        """Reset root states of part and board."""
 
         # shape of root_pos = (num_envs, num_actors, 3)
         # shape of root_quat = (num_envs, num_actors, 4)
         # shape of root_linvel = (num_envs, num_actors, 3)
         # shape of root_angvel = (num_envs, num_actors, 3)
 
-        # # Randomize root state of part
-        # part_noise_xy = 2 * (
-        #     torch.rand((self.num_envs, 2), dtype=torch.float32, device=self.device)
-        #     - 0.5
-        # )  # [-1, 1]
-        # part_noise_xy = part_noise_xy @ torch.diag(
-        #     torch.tensor(
-        #         self.cfg_task.randomize.part_pos_xy_initial_noise, device=self.device
-        #     )
-        # )
-        # self.root_pos[env_ids, self.part_actor_id_env, 0] = (
-        #     self.cfg_task.randomize.part_pos_xy_initial[0] + part_noise_xy[env_ids, 0]
-        # )
-        # self.root_pos[env_ids, self.part_actor_id_env, 1] = (
-        #     self.cfg_task.randomize.part_pos_xy_initial[1] + part_noise_xy[env_ids, 1]
-        # )
-        # self.root_pos[
-        #     env_ids, self.part_actor_id_env, 2
-        # ] = self.cfg_base.env.table_height
-        # self.root_quat[env_ids, self.part_actor_id_env] = torch.tensor(
-        #     [0.0, 0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
-        # ).repeat(len(env_ids), 1)
+        # Randomize root state of part within gripper
+        self.root_pos[env_ids, self.part_actor_id_env, 0] = 0.0
+        self.root_pos[env_ids, self.part_actor_id_env, 1] = 0.0
+        fingertip_midpoint_pos_reset = 0.58781  # self.fingertip_midpoint_pos at reset
+        self.root_pos[env_ids, self.part_actor_id_env, 2] = (
+            fingertip_midpoint_pos_reset + 0.003
+        )
 
-        # self.root_linvel[env_ids, self.part_actor_id_env] = 0.0
-        # self.root_angvel[env_ids, self.part_actor_id_env] = 0.0
+        part_noise_pos_in_gripper = 2 * (
+            torch.rand((self.num_envs, 3), dtype=torch.float32, device=self.device)
+            - 0.5
+        )  # [-1, 1]
+        part_noise_pos_in_gripper = part_noise_pos_in_gripper @ torch.diag(
+            torch.tensor(
+                self.cfg_task.randomize.part_noise_pos_in_gripper, device=self.device
+            )
+        )
+        # self.root_pos[env_ids, self.part_actor_id_env, :] += part_noise_pos_in_gripper[
+        #     env_ids
+        # ]
+
+        # part_rot_euler = torch.tensor([0.0, 0.0, math.pi * 0.5], device=self.device).repeat(len(env_ids), 1)
+        # part_noise_rot_in_gripper = \
+        #     2 * (torch.rand(self.num_envs, dtype=torch.float32, device=self.device) - 0.5)  # [-1, 1]
+        # part_noise_rot_in_gripper *= self.cfg_task.randomize.part_noise_rot_in_gripper
+        # part_rot_euler[:, 2] += part_noise_rot_in_gripper
+        # part_rot_quat = torch_utils.quat_from_euler_xyz(part_rot_euler[:, 0], part_rot_euler[:, 1], part_rot_euler[:, 2])
+        # NOTE: hardcoded to lie orthogonal to gripper closing direction.
+        self.root_quat[env_ids, self.part_actor_id_env] = torch.tensor(
+            [0.0, 0.0, 0.707106781186547, 0.707106781186547],
+            dtype=torch.float32,
+            device=self.device,
+        ).repeat(len(env_ids), 1)
 
         # Randomize root state of board
         board_noise_xy = 2 * (
@@ -414,8 +444,6 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         self.root_pos[env_ids, self.board_actor_id_env, 2] = (
             self.cfg_base.env.table_height + 0.02
         )
-
-        # TODO: Add random orientations for board.
         # [0, 2 PI]
         yaws = torch.rand(
             (self.num_envs, 1), dtype=torch.float32, device=self.device
@@ -434,27 +462,6 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
 
         self.root_linvel[env_ids, self.board_actor_id_env] = 0.0
         self.root_angvel[env_ids, self.board_actor_id_env] = 0.0
-
-        # Set the transform of the chip to be seated in the board
-
-        self.root_pos[env_ids, self.part_actor_id_env, 0] = self.root_pos[
-            env_ids, self.board_actor_id_env, 0
-        ]
-        self.root_pos[env_ids, self.part_actor_id_env, 1] = self.root_pos[
-            env_ids, self.board_actor_id_env, 1
-        ]
-
-        self.root_pos[env_ids, self.part_actor_id_env, 2] = (
-            self.cfg_base.env.table_height + 0.02 + 0.005
-        )
-
-        self.root_quat[env_ids, self.part_actor_id_env] = qyaws
-        # self.root_quat[env_ids, self.part_actor_id_env] = torch.tensor(
-        # [0.0, 0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
-        # ).repeat(len(env_ids), 1)
-
-        self.root_linvel[env_ids, self.part_actor_id_env] = 0.0
-        self.root_angvel[env_ids, self.part_actor_id_env] = 0.0
 
         part_board_actor_ids_sim = torch.cat(
             (self.part_actor_ids_sim[env_ids], self.board_actor_ids_sim[env_ids]), dim=0
@@ -505,11 +512,6 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         angle = torch.norm(rot_actions, p=2, dim=-1)
         axis = rot_actions / angle.unsqueeze(-1)
         rot_actions_quat = torch_utils.quat_from_angle_axis(angle, axis)
-        # TODO: This logic is slightly weird
-        # We first copy the angle a : [a, a, a, a]
-        # If a > clamp_rot_thresh
-        # we use a
-        # otherwise we use default no-rotation orientation.
         if self.cfg_task.rl.clamp_rot:
             rot_actions_quat = torch.where(
                 angle.unsqueeze(-1).repeat(1, 4) > self.cfg_task.rl.clamp_rot_thresh,
@@ -548,6 +550,40 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
 
         self.generate_ctrl_signals()
 
+    def _open_gripper(self, sim_steps=20):
+        """Fully open gripper using controller. Called outside RL loop (i.e., after last step of episode)."""
+
+        self._move_gripper_to_dof_pos(gripper_dof_pos=0.1, sim_steps=sim_steps)
+
+    def _move_gripper_to_dof_pos(self, gripper_dof_pos, sim_steps=20):
+        """Move gripper fingers to specified DOF position using controller."""
+
+        delta_hand_pose = torch.zeros(
+            (self.num_envs, self.cfg_task.env.numActions), device=self.device
+        )  # no arm motion
+        self._apply_actions_as_ctrl_targets(
+            delta_hand_pose, gripper_dof_pos, do_scale=False
+        )
+
+        # Step sim
+        for _ in range(sim_steps):
+            self.render()
+            self.gym.simulate(self.sim)
+
+    def _lift_gripper(self, gripper_dof_pos=0.0, lift_distance=0.3, sim_steps=20):
+        """Lift gripper by specified distance. Called outside RL loop (i.e., after last step of episode)."""
+
+        delta_hand_pose = torch.zeros([self.num_envs, 6], device=self.device)
+        delta_hand_pose[:, 2] = lift_distance  # lift along z
+
+        # Step sim
+        for _ in range(sim_steps):
+            self._apply_actions_as_ctrl_targets(
+                delta_hand_pose, gripper_dof_pos, do_scale=False
+            )
+            self.render()
+            self.gym.simulate(self.sim)
+
     def _get_keypoint_offsets(self, num_keypoints):
         """Get uniformly-spaced keypoints along a line of unit length, centered at 0."""
 
@@ -559,59 +595,28 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
         return keypoint_offsets
 
     def _get_keypoint_dist(self):
-        """Get keypoint distance."""
+        """Get keypoint distances."""
 
         keypoint_dist = torch.sum(
-            torch.norm(self.keypoints_part - self.keypoints_gripper, p=2, dim=-1),
-            dim=-1,
+            torch.norm(self.keypoints_board - self.keypoints_part, p=2, dim=-1), dim=-1
         )
 
         return keypoint_dist
 
-    def _close_gripper(self, sim_steps=20):
-        """Fully close gripper using controller. Called outside RL loop (i.e., after last step of episode)."""
+    def _check_part_close_to_board(self):
+        """Check if part is close to board."""
 
-        self._move_gripper_to_dof_pos(gripper_dof_pos=0.0, sim_steps=sim_steps)
-
-    def _move_gripper_to_dof_pos(self, gripper_dof_pos, sim_steps=20):
-        """Move gripper fingers to specified DOF position using controller."""
-
-        delta_hand_pose = torch.zeros(
-            (self.num_envs, self.cfg_task.env.numActions), device=self.device
-        )  # No hand motion
-        self._apply_actions_as_ctrl_targets(
-            delta_hand_pose, gripper_dof_pos, do_scale=False
+        keypoint_dist = torch.norm(
+            self.keypoints_board - self.keypoints_part, p=2, dim=-1
         )
 
-        # Step sim
-        for _ in range(sim_steps):
-            self.render()
-            self.gym.simulate(self.sim)
-
-    def _lift_gripper(self, franka_gripper_width=0.0, lift_distance=0.3, sim_steps=20):
-        """Lift gripper by specified distance. Called outside RL loop (i.e., after last step of episode)."""
-
-        delta_hand_pose = torch.zeros([self.num_envs, 6], device=self.device)
-        delta_hand_pose[:, 2] = lift_distance
-
-        # Step sim
-        for _ in range(sim_steps):
-            self._apply_actions_as_ctrl_targets(
-                delta_hand_pose, franka_gripper_width, do_scale=False
-            )
-            self.render()
-            self.gym.simulate(self.sim)
-
-    def _check_lift_success(self, height_multiple):
-        """Check if nut is above table by more than specified multiple times height of nut."""
-
-        lift_success = torch.where(
-            self.part_pos[:, 2] > self.cfg_base.env.table_height + 0.1,
-            torch.ones((self.num_envs,), device=self.device),
-            torch.zeros((self.num_envs,), device=self.device),
+        is_part_close_to_board = torch.where(
+            torch.sum(keypoint_dist, dim=-1) < self.cfg_task.rl.close_error_thresh,
+            torch.ones_like(self.progress_buf),
+            torch.zeros_like(self.progress_buf),
         )
 
-        return lift_success
+        return is_part_close_to_board
 
     def _randomize_gripper_pose(self, env_ids, sim_steps):
         """Move gripper to random pose."""
@@ -687,9 +692,7 @@ class FactoryTaskPcbPartPick(FactoryEnvPcb, FactoryABCTask):
             actions[:, :6] = delta_hand_pose
 
             self._apply_actions_as_ctrl_targets(
-                actions=actions,
-                ctrl_target_gripper_dof_pos=self.asset_info_franka_table.franka_gripper_width_max,
-                do_scale=False,
+                actions=actions, ctrl_target_gripper_dof_pos=0.0, do_scale=False
             )
 
             self.gym.simulate(self.sim)
