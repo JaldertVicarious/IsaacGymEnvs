@@ -38,6 +38,7 @@ import omegaconf
 import os
 import torch
 
+
 import roma
 import numpy as np
 from isaacgym import gymapi, gymtorch, torch_utils
@@ -122,15 +123,58 @@ class FactoryTaskPcbPartInsert(FactoryEnvPcb, FactoryABCTask):
         # TODO: Add keypoints on prongs and below board at the correct locations.
         # The keypoints are then also not lines but an array of 2x4 pins.
 
+        # TODO: offsets might need to be different for part and board.
+        self.part_keypoint_offsets = torch.tensor(
+            [
+                [-0.05, 0.0, 0.0],
+                [0.05, 0.0, 0.0],
+                [0.0, 0.0, -0.05],
+                [0.0, 0.0, 0.05],
+                [-0.00381, 0.00381, -0.00575],
+                # [-0.00127, 0.00381, -0.004],
+                # [0.00127, 0.00381, -0.004],
+                # [0.00381, 0.00381, -0.004],
+                # [-0.00381, -0.00381, -0.004],
+                # [-0.00127, -0.00381, -0.004],
+                # [0.00127, -0.00381, -0.004],
+                [0.00381, -0.00381, -0.00575],
+            ],
+            dtype=torch.float32,
+            device=self.device,
+        )
+
+        delta = (0.0035 + 0.00157) / 2
+
+        self.board_keypoint_offsets = torch.tensor(
+            [
+                [-0.05, 0.0, delta],
+                [0.05, 0.0, delta],
+                [0.0, 0.0, -0.05 + delta],
+                [0.0, 0.0, 0.05 + delta],
+                [-0.00381, 0.00381, -0.00575 + delta],
+                # [-0.00127, 0.00381, -0.004],
+                # [0.00127, 0.00381, -0.004],
+                # [0.00381, 0.00381, -0.004],
+                # [-0.00381, -0.00381, -0.004],
+                # [-0.00127, -0.00381, -0.004],
+                # [0.00127, -0.00381, -0.004],
+                [0.00381, -0.00381, -0.00575 + delta],
+            ],
+            dtype=torch.float32,
+            device=self.device
+        )
+
+
+
         # NOTE: Key points seem to be aligned along z-axis in part-board example.
         # This would ensure an alignment of top-down grasp.
 
-        self.keypoint_offsets = (
-            self._get_keypoint_offsets(self.cfg_task.rl.num_keypoints)
-            * self.cfg_task.rl.keypoint_scale
-        )
+        # self.keypoint_offsets = (
+        #     self._get_keypoint_offsets(self.cfg_task.rl.num_keypoints)
+        #     * self.cfg_task.rl.keypoint_scale
+        # )
         self.keypoints_part = torch.zeros(
-            (self.num_envs, self.cfg_task.rl.num_keypoints, 3),
+            (self.num_envs, 6, 3),
             dtype=torch.float32,
             device=self.device,
         )
@@ -150,18 +194,21 @@ class FactoryTaskPcbPartInsert(FactoryEnvPcb, FactoryABCTask):
         """Refresh tensors."""
 
         # Compute pos of keypoints on gripper, part, and board in world frame
-        for idx, keypoint_offset in enumerate(self.keypoint_offsets):
+        for idx, keypoint_offset in enumerate(self.part_keypoint_offsets):
             self.keypoints_part[:, idx] = torch_jit_utils.tf_combine(
                 self.part_quat,
                 self.part_pos,
                 self.identity_quat,
                 (keypoint_offset + self.part_pos_local),
             )[1]
+        
+        
+        for idx, keypoint_offset in enumerate(self.board_keypoint_offsets):
             self.keypoints_board[:, idx] = torch_jit_utils.tf_combine(
                 self.board_quat,
                 self.board_pos,
                 self.identity_quat,
-                (keypoint_offset + self.board_pos_local),
+                (keypoint_offset + self.board_pos_local ),
             )[1]
 
     def pre_physics_step(self, actions):
@@ -205,9 +252,10 @@ class FactoryTaskPcbPartInsert(FactoryEnvPcb, FactoryABCTask):
 
         # Render key points
 
-        eps = 0.01 / 2
+        # TODO: Ensure that the right keypoints line up.
+        eps = 0.001 / 2
 
-        for idx in range(self.cfg_task.rl.num_keypoints):
+        for idx in range(6):
             # P_W
             x, y, z = self.keypoints_part[0, idx].cpu()
 
@@ -254,6 +302,37 @@ class FactoryTaskPcbPartInsert(FactoryEnvPcb, FactoryABCTask):
                     dtype=np.float32,
                 ),
             )
+
+        # TODO: This seems pretty noisy, and the norm seems large. Is my interpretation correct?
+        # 
+        # Render contact forces on fingers
+        # env x 3
+        fx, fy, fz = self.left_finger_force[0, :].cpu()
+        x, y, z = self.left_finger_pos[0, :].cpu()
+        tx = gymapi.Transform(
+            gymapi.Vec3(*self.left_finger_pos[0, :].cpu()),
+            gymapi.Quat(*self.left_finger_quat[0, :].cpu()),
+        )
+
+        vec = tx.transform_point(gymapi.Vec3(fx, fy, fz))
+
+        self.gym.add_lines(
+            self.viewer,
+            self.gym.get_env(self.sim, 0),
+            1,
+            np.array(
+                [
+                    [x, y, z],
+                    [x + vec.x, y + vec.y, z + vec.z],
+                ],
+                dtype=np.float32,
+            ),
+            np.array(
+                [[0.0, 0.0, 255.0]],
+                dtype=np.float32,
+            ),
+        )
+
 
         # Shallow copies of tensors
         obs_tensors = [
@@ -332,9 +411,9 @@ class FactoryTaskPcbPartInsert(FactoryEnvPcb, FactoryABCTask):
             self.render()
         self.enable_gravity(gravity_mag=self.cfg_base.sim.gravity_mag)
 
-        self._randomize_gripper_pose(
-            env_ids, sim_steps=self.cfg_task.env.num_gripper_move_sim_steps
-        )
+        # self._randomize_gripper_pose(
+        #     env_ids, sim_steps=self.cfg_task.env.num_gripper_move_sim_steps
+        # )
 
         self._reset_buffers(env_ids)
 
@@ -398,7 +477,7 @@ class FactoryTaskPcbPartInsert(FactoryEnvPcb, FactoryABCTask):
         self.root_pos[env_ids, self.part_actor_id_env, 1] = 0.0
         fingertip_midpoint_pos_reset = 0.58781  # self.fingertip_midpoint_pos at reset
         self.root_pos[env_ids, self.part_actor_id_env, 2] = (
-            fingertip_midpoint_pos_reset + 0.003
+            fingertip_midpoint_pos_reset + 0.004
         )
 
         part_noise_pos_in_gripper = 2 * (
@@ -441,24 +520,24 @@ class FactoryTaskPcbPartInsert(FactoryEnvPcb, FactoryABCTask):
         self.root_pos[env_ids, self.board_actor_id_env, 1] = (
             self.cfg_task.randomize.board_pos_xy_initial[1] + board_noise_xy[env_ids, 1]
         )
-        self.root_pos[env_ids, self.board_actor_id_env, 2] = (
-            self.cfg_base.env.table_height + 0.02
-        )
-        # [0, 2 PI]
-        yaws = torch.rand(
-            (self.num_envs, 1), dtype=torch.float32, device=self.device
-        ) * (np.pi * 2)
+        self.root_pos[env_ids, self.board_actor_id_env, 2] = 0.57
+        
+        # # [0, 2 PI]
+        # yaws = torch.rand(
+        #     (self.num_envs, 1), dtype=torch.float32, device=self.device
+        # ) * (np.pi * 2)
 
-        rotvecs = (
-            torch.tensor(
-                [0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
-            ).repeat(len(env_ids), 1)
-            * yaws
-        )
+        # rotvecs = (
+        #     torch.tensor(
+        #         [0.0, 0.0, 1.0], dtype=torch.float32, device=self.device
+        #     ).repeat(len(env_ids), 1)
+        #     * yaws
+        # )
 
-        qyaws = roma.rotvec_to_unitquat(rotvecs)
+        # qyaws = roma.rotvec_to_unitquat(rotvecs)
 
-        self.root_quat[env_ids, self.board_actor_id_env] = qyaws
+        # self.root_quat[env_ids, self.board_actor_id_env] = qyaws
+        self.root_quat[env_ids, self.board_actor_id_env] = torch.tensor([0., 0.,  0.707106781186547, 0.70710678118654], device=self.device).repeat(len(env_ids), 1)
 
         self.root_linvel[env_ids, self.board_actor_id_env] = 0.0
         self.root_angvel[env_ids, self.board_actor_id_env] = 0.0

@@ -10,7 +10,7 @@ sim:
 env:
     env_name: 'FactoryEnvPcb'
 
-    desired_subassemblies: ['part_board_simple']
+    desired_subassemblies: ['part_board_subdiv_2x']
     part_board_density: 10000
     part_lateral_offset: 0.1
     part_board_friction: 0.9

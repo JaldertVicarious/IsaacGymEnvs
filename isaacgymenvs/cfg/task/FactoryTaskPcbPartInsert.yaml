@@ -16,7 +16,7 @@ sim:
     disable_gravity: True
 
 env:
-    numEnvs: 128
+    numEnvs: 192
     numObservations: 27
     numActions: 12
 
@@ -36,7 +36,7 @@ randomize:
     part_noise_pos_in_gripper: [0.0, 0.0, 0.01]  # noise on part position within gripper
     part_noise_rot_in_gripper: 0.0  # noise on part rotation within gripper
     board_pos_xy_initial: [0.0, 0.0]  # initial XY position of board on table
-    board_pos_xy_noise: [0.1, 0.1]  # noise on board position
+    board_pos_xy_noise: [0.001, 0.001]  # noise on board position
 
 rl:
     pos_action_scale: [0.1, 0.1, 0.1]

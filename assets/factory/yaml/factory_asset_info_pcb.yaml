@@ -3,3 +3,9 @@ part_board_simple:
         urdf_path: 'factory_pcb_part'
     board:
         urdf_path: 'factory_pcb_board'
+
+part_board_subdiv_2x:
+    part:
+        urdf_path: 'factory_pcb_part_subdiv_2x'
+    board:
+        urdf_path: 'factory_pcb_board_subdiv_2x'
